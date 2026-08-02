@@ -1,13 +1,17 @@
 """
 ① 주간 전략 브리핑 — 3대 과제 카드 + 규정 요약 박스 + 수용/보류 피드백 버튼
 
-Supervisor Agent가 부문별 연산 결과(가성비/상한도달/벤치마킹/사각지대)를 종합해
-지점장에게 보고하는 화면. 지점장이 [수용/보류] 버튼을 누르면 그 결정이 피드백
-로그에 쌓이고, ⑤ 피드백 로그 화면에서 학습된 규칙으로 진화한다.
+[Phase 3 구조] 브리핑은 LangGraph 멀티에이전트 그래프가 생성한다:
+  dispatch → 부문 에이전트 4개 병렬(fan-out) → Validator 검증
+           → (문제 시 해당 부문만 재실행) → Supervisor 종합 → 최종 검증 → 완료
+
+지점장이 [수용/보류] 버튼을 누르면 그 결정이 피드백 로그에 쌓이고,
+⑤ 피드백 로그 화면에서 학습된 규칙으로 진화한다.
 """
 import streamlit as st
 
-from src import benchmarking, feedback_store, llm_agent, rag, scoring_engine
+from src import dept_facts, feedback_store, graph, scoring_engine, validator
+from src.kpi_master import DEPARTMENTS
 from src.state import append_feedback, get_data, sidebar_controls
 
 st.set_page_config(page_title="주간 전략 브리핑", page_icon="📋", layout="wide")
@@ -15,45 +19,32 @@ sidebar_controls()
 
 data = get_data()
 computed = scoring_engine.compute_all(data["indicators"])
-bench_rows = benchmarking.benchmark_all(computed)
 learned_rules = feedback_store.derive_rules(data["feedback_log"])
 adjusted = feedback_store.apply_rules(computed, learned_rules)
 
-by_category = {"가성비": [], "상한도달": [], "사각지대": []}
-for c in adjusted:
-    if c["category"] in by_category:
-        by_category[c["category"]].append(c)
-
-top_roi = sorted(by_category["가성비"], key=lambda c: c["adjusted_roi"], reverse=True)[:2]
-maxed = by_category["상한도달"][:1]
-micro = by_category["사각지대"][:1]
-underperforming = benchmarking.top_underperforming(computed, n=1)
-
-related_names = [c["name"] for c in (top_roi + maxed + micro)]
-reg_chunks = []
-for name in related_names:
-    reg_chunks += rag.search(name, top_k=1)
-regulation_note = "\n".join(f"[{c['title']}] {c['text'][:150]}" for c in reg_chunks[:3]) or "관련 규정 근거를 찾지 못했습니다."
-
-facts = {
-    "top_roi": top_roi,
-    "maxed": maxed,
-    "underperforming": underperforming,
-    "micro": micro,
-    "learned_rules": learned_rules,
-    "regulation_note": regulation_note,
-}
+# 연산엔진 결과를 부문별로 분배 (LLM 호출 없음 — 순수 Python)
+all_dept_facts = dept_facts.build_all_dept_facts(
+    DEPARTMENTS, adjusted, computed, learned_rules, data["branch_profile"]
+)
+# Validator가 대조할 '정답표' — 엔진이 계산한 원본 값
+engine_index = validator.build_engine_index(computed)
 
 st.title("📋 이번 주 전략 브리핑")
 st.caption(f"기준일 {data['as_of']} · 잔여 {data['remaining_days']}영업일 · {data['branch_profile']['type']}")
 
-if st.button("🔄 브리핑 다시 생성", help="AI가 최신 데이터로 브리핑 문구를 새로 생성합니다."):
+if st.button("🔄 브리핑 다시 생성", help="에이전트 그래프를 다시 실행해 브리핑을 새로 생성합니다."):
     st.session_state.pop("briefing", None)
 
-if "briefing" not in st.session_state or st.session_state.get("briefing_seed") != data["seed"]:
-    with st.spinner("Supervisor Agent가 브리핑을 작성하는 중..."):
-        st.session_state.briefing = llm_agent.generate_weekly_briefing(facts)
-        st.session_state.briefing_seed = data["seed"]
+# 피드백이 쌓여 규칙이 바뀌면 브리핑도 다시 생성되어야 하므로 규칙 수를 캐시 키에 포함한다.
+cache_key = (data["seed"], data["as_of"], len(learned_rules))
+if "briefing" not in st.session_state or st.session_state.get("briefing_key") != cache_key:
+    with st.status("에이전트 그래프 실행 중...", expanded=True) as status:
+        status.write("🔀 4개 부문 전문 에이전트를 병렬 실행하고, Validator가 결과를 검증합니다...")
+        st.session_state.briefing = graph.run_briefing_graph(
+            all_dept_facts, learned_rules, data["branch_profile"], engine_index,
+        )
+        st.session_state.briefing_key = cache_key
+        status.update(label="브리핑 생성 완료", state="complete", expanded=False)
 
 briefing = st.session_state.briefing
 
@@ -101,3 +92,55 @@ with st.container(border=True):
 if learned_rules:
     st.info("**학습된 지점 규칙이 이번 브리핑에 반영되었습니다:** " +
             " / ".join(r["rule_text"] for r in learned_rules))
+
+st.divider()
+st.markdown("#### 🛡️ Validator 검증 로그 (자기교정 루프)")
+st.caption("에이전트 출력이 SOP 규칙을 지켰는지 검사한 기록입니다. 검증은 LLM이 아닌 "
+           "결정론적 Python이 수행하며, 엔진이 계산한 원본 값과 직접 대조합니다. "
+           "문제가 발견되면 해당 부문만 자동으로 다시 실행됩니다.")
+
+validation_log = briefing.get("validation_log", [])
+with st.container(border=True):
+    if not validation_log:
+        st.write("검증 기록이 없습니다.")
+    for line in validation_log:
+        if line.startswith("["):
+            if "통과" in line:
+                st.markdown(f"✅ {line}")
+            elif "발견" in line:
+                st.markdown(f"⚠️ {line}")
+            else:
+                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;↳ {line}", unsafe_allow_html=True)
+        else:
+            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;↳ {line}", unsafe_allow_html=True)
+
+st.divider()
+st.markdown("#### 🧩 부문별 에이전트 분석 결과")
+st.caption("Supervisor가 최종 3대 과제를 확정하기 전에, 각 부문 에이전트가 올린 원본 안건입니다. "
+           "부문별로 역할을 나눠 자기 분야 규칙만 집중 판단하도록 설계했습니다.")
+
+dept_results = briefing.get("dept_results", {})
+dept_tabs = st.tabs([f"{d} ({len(all_dept_facts.get(d, {}).get('indicators', []))}개 지표)" for d in DEPARTMENTS])
+for tab, dept in zip(dept_tabs, DEPARTMENTS):
+    with tab:
+        result = dept_results.get(dept)
+        if not result:
+            st.write("분석 결과가 없습니다.")
+            continue
+
+        st.markdown(f"**{result.get('dept_summary', '')}**")
+
+        recommendations = result.get("recommendations", [])
+        if recommendations:
+            for rec in recommendations:
+                with st.container(border=True):
+                    st.markdown(f"**{rec['indicator_name']}**")
+                    st.write(rec["reason"])
+                    st.caption(f"🗣️ 창구 안내: {rec['counter_guide']}")
+                    st.caption(f"⚠️ 유의사항: {rec['caution']}")
+        else:
+            st.write("이 부문에서는 추천할 과제가 없습니다.")
+
+        stops = result.get("stop_recommendations", [])
+        if stops:
+            st.warning("🛑 영업중단 권고 (상한 도달): " + ", ".join(stops))

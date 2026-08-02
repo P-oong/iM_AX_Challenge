@@ -5,6 +5,47 @@
 ROI·벤치마킹은 전부 `src/scoring_engine.py` / `src/benchmarking.py`가 결정론적으로
 계산하고, OpenAI GPT(`gpt-5.6-terra`)는 그 결과를 해석·브리핑·Q&A에만 사용합니다.
 
+## 브리핑 생성 구조 (LangGraph 멀티에이전트)
+
+주간 브리핑은 하나의 프롬프트가 30개 지표를 한꺼번에 처리하지 않고, LangGraph 그래프가
+부문별로 나눠 병렬 처리합니다. 정보량에 눌려 중간 내용을 누락하거나 부문별 규칙을
+혼동하는 '지시 희석 현상'을 막기 위한 구조입니다.
+
+```
+START → dispatch ─┬─▶ 수신 에이전트 ─┐
+                  ├─▶ 여신 에이전트 ─┤
+                  ├─▶ 외환 에이전트 ─┤ (Send fan-out, 동시 실행)
+                  └─▶ 기업연금 에이전트┘
+                            │
+                            ▼
+                     Validator ─── 문제 발견 시 해당 부문만 재실행 ─┐
+                            │◄─────────────────────────────────────┘
+                            ▼ 통과
+                       Supervisor (최종 3대 과제 확정)
+                            │
+                            ▼
+                     최종 Validator ── 문제 시 재실행 ─┐
+                            │◄────────────────────────┘
+                            ▼ 통과
+                           END
+```
+
+| 파일 | 역할 |
+|---|---|
+| `src/graph.py` | `BranchKPIState` 정의 + 그래프 조립 (fan-out / 자기교정 루프) |
+| `src/validator.py` | 결정론적 검증 (V1~V7, B1~B3). **LLM을 쓰지 않음** |
+| `src/dept_prompts.py` | 부문별 SOP 프롬프트 (공통 뼈대 + 부문 특화 판단 로직) |
+| `src/dept_facts.py` | 연산엔진 결과를 부문별로 분배 (LLM 호출 없음) |
+| `src/llm_agent.py` | 부문 에이전트 / Supervisor의 실제 LLM 호출 |
+
+**Validator를 LLM이 아닌 Python으로 만든 이유**: 수치가 맞는지를 다시 LLM에게 묻는 것은
+'계산은 엔진이' 원칙을 스스로 무너뜨리는 일입니다. 부문 에이전트가 인용한 수치
+(`cited_current_value` / `cited_gap` / `cited_score_gain`)를 엔진 원본 값과 직접
+대조해, 수치 환각·부문 월경·존재하지 않는 지표 추천 등을 잡아냅니다.
+
+부문별 KPI 규정이 바뀌면 `dept_prompts.py`의 해당 부문 블록만 교체하면 되므로
+전체를 손대지 않아도 됩니다.
+
 ## 화면 구성
 
 | 파일 | 화면 |

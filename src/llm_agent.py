@@ -1,15 +1,22 @@
 """
 LLM(OpenAI GPT) 연동 계층 — 보고서의 설계 원칙 "판단은 AI가, 계산은 엔진이"의 AI 쪽 절반.
 
-이 파일이 하는 일은 딱 두 가지뿐이다:
-  1) generate_weekly_briefing : scoring_engine/benchmarking/feedback_store가 이미
-     계산해 둔 '숫자'를 자연어 브리핑 문장으로 번역한다. 점수·구간·ROI를 LLM이
-     다시 계산하지 않도록 프롬프트에 명시하고, 출력은 JSON 스키마로 강제한다.
-  2) answer_regulation_question : rag.py가 찾아준 규정 청크만 근거로 답변한다.
-     근거 청크가 없으면 LLM을 호출하지 않고 "규정 확인 필요"를 반환한다(GUARD 규칙).
+[Phase 2 구조] 브리핑 생성은 2단계로 나뉜다:
+  1단계 (부문 에이전트) : 수신·여신·외환·기업연금 4개 부문 에이전트가 각자 자기
+      부문 지표만 보고 추천 2건씩을 낸다. 프롬프트는 dept_prompts.py, 입력은
+      dept_facts.py가 만든다. 하나의 프롬프트에 30개 지표를 몰아넣을 때 생기는
+      '지시 희석 현상'을 막는 것이 목적이다.
+  2단계 (Supervisor)    : 부문별 추천을 동일 척도로 비교해 최종 3대 과제를 확정하고
+      지점장 브리핑 문구로 다듬는다.
 
-OPENAI_API_KEY가 설정되어 있지 않으면 두 함수 모두 결정론적 폴백 텍스트로
-동작한다 — 데모를 먼저 배포하고 새벽에 키만 추가해도 되도록 하기 위함이다.
+이 파일이 제공하는 함수:
+  - run_dept_agent           : 부문 에이전트 1개 실행
+  - run_all_dept_agents      : 4개 부문 순차 실행 (Phase 3에서 LangGraph 병렬 노드로 교체)
+  - generate_weekly_briefing : 위 2단계를 묶어 최종 브리핑을 생성 (페이지에서 호출)
+  - answer_regulation_question : rag.py가 찾아준 규정 청크만 근거로 답변
+
+OPENAI_API_KEY가 없으면 모든 함수가 결정론적 폴백 텍스트로 동작한다 — 데모를
+먼저 배포하고 나중에 키만 추가해도 되도록 하기 위함이다.
 키는 src/config.py 가 .env(로컬) 또는 환경변수(배포)에서 읽어온다.
 
 모델은 GPT-5.6 계열 중 '균형형(Terra)' 등급을 사용한다 — 이 앱의 LLM 호출은
@@ -19,6 +26,8 @@ OPENAI_API_KEY가 설정되어 있지 않으면 두 함수 모두 결정론적 �
 import json
 
 from src.config import get_openai_api_key
+from src.dept_prompts import DEPT_AGENT_SCHEMA, build_dept_prompt
+from src.kpi_master import DEPARTMENTS
 
 MODEL = "gpt-5.6-terra"
 
@@ -47,18 +56,25 @@ BRIEFING_SCHEMA = {
 
 SUPERVISOR_SYSTEM_PROMPT = """\
 [ROLE] 당신은 은행 영업점의 KPI 전담 책임자(Supervisor Agent)다.
+4개 부문(수신·여신·외환·기업연금) 전문 에이전트가 올린 추천 안건을 받아
+지점 전체 관점에서 이번 주 3대 과제를 확정하는 것이 당신의 역할이다.
+
 [RULE]
-R1. 이미 상한(만점)에 도달한 지표는 "영업중단 권고"로 안내할 것.
-R2. 잔여기간 내 물리적으로 달성 불가능한 지표는 추천하지 말 것.
-R3. 지점 학습 규칙(가중치 하향)이 주어지면 해당 부문 지표의 우선순위를 낮추고,
-    상권 특성에 맞는 대체 지표를 제안할 것.
-R4. 모든 수치(점수, 필요건수, 달성률 등)는 입력으로 주어진 값만 그대로 인용할 것.
-    스스로 숫자를 계산하거나 추정하지 말 것.
+R1. 부문 에이전트가 올린 안건 중에서만 선택할 것. 새로운 지표를 임의로 만들지 말 것.
+R2. 서로 다른 부문의 안건을 균형 있게 배분할 것. 한 부문에서만 3건을 뽑지 말 것.
+R3. 부문 에이전트가 '영업중단 권고'로 올린 지표가 있으면 그 사실을 브리핑에 반영할 것.
+R4. 모든 수치는 부문 에이전트가 인용한 값을 그대로 쓸 것. 스스로 계산하거나 추정하지 말 것.
+R5. 지점 학습 규칙이 주어졌다면, 그 규칙이 왜 이번 추천에 반영되었는지 한 문장으로 언급할 것.
+
 [GUARD] 입력에 없는 근거는 만들어내지 말 것.
-[OUTPUT] 반드시 주어진 JSON 스키마 형식으로만 답할 것. 3개의 card는 각각
-'구간 연산'(상한도달/가성비 지표), '벤치마킹'(peer 대비 뒤처진 지표),
-'사각지대'(놓치기 쉬운 지표) 관점을 하나씩 담을 것. 어조는 지점장에게 보고하는
-간결하고 실무적인 한국어로 작성할 것."""
+
+[OUTPUT] 반드시 주어진 JSON 스키마 형식으로만 답할 것. 3개의 card는 가급적
+'구간 연산'(구간 통과·상한 도달 관점), '벤치마킹'(peer 대비 격차 관점),
+'사각지대'(놓치기 쉬운 조건부 지표 관점)를 하나씩 담되, 해당하는 안건이 없으면
+있는 관점 안에서 3건을 구성할 것.
+regulation_summary에는 선정된 과제들의 창구 안내 문구와 규정 유의사항을 묶어
+그대로 전 직원에게 배포할 수 있는 형태로 작성할 것.
+어조는 지점장에게 보고하는 간결하고 실무적인 한국어로 작성할 것."""
 
 QA_SYSTEM_PROMPT = """\
 [ROLE] 당신은 은행 KPI 세부 평가기준 규정 안내 챗봇이다.
@@ -80,68 +96,147 @@ def get_client():
         return None
 
 
-def _fallback_briefing(facts: dict) -> dict:
+# ──────────────────────────────────────────────────────────────────────
+# 1단계: 부문 전문 에이전트
+# ──────────────────────────────────────────────────────────────────────
+
+def _fallback_dept_result(dept_facts: dict) -> dict:
+    """키가 없거나 호출이 실패했을 때 쓰는 결정론적 부문 결과.
+    연산엔진이 이미 정렬해 둔 상위 지표를 그대로 추천으로 삼는다(환각 없음)."""
+    indicators = dept_facts["indicators"]
+    recommendations = []
+    for ind in indicators[:2]:
+        if ind["상한도달"] or not ind["잔여기간내_달성가능"]:
+            continue
+        recommendations.append({
+            "indicator_name": ind["지표명"],
+            "reason": (
+                f"현재 {ind['현재실적']}{ind['단위']}({ind['달성률(%)']}%)로, "
+                f"{ind['다음구간까지_필요실적']}{ind['단위']}를 더 확보하면 "
+                f"+{ind['다음구간_통과시_추가점수']}점 구간을 통과합니다."
+            ),
+            "counter_guide": ind["규정요약"] or "규정 확인 후 안내 바랍니다.",
+            "caution": ind["규정요약"] or "규정 확인 필요",
+            # Validator가 대조할 수 있도록 엔진 값을 그대로 싣는다 (폴백은 정의상 항상 일치)
+            "cited_current_value": ind["현재실적"],
+            "cited_gap": ind["다음구간까지_필요실적"],
+            "cited_score_gain": ind["다음구간_통과시_추가점수"],
+        })
+
+    return {
+        "dept_summary": f"{dept_facts['dept']} 부문 지표 {len(indicators)}건을 검토했습니다.",
+        "recommendations": recommendations,
+        "stop_recommendations": dept_facts["maxed_indicators"][:2],
+    }
+
+
+def run_dept_agent(dept: str, dept_facts: dict, client=None) -> dict:
+    """부문 전문 에이전트 1개를 실행한다.
+    client를 넘기면 재사용하고, 없으면 새로 만든다(부문마다 재생성하지 않도록)."""
+    client = client or get_client()
+    if client is None:
+        return _fallback_dept_result(dept_facts)
+
+    user_prompt = (
+        f"다음은 결정론적 연산엔진이 계산한 {dept} 부문 데이터다. "
+        "이 숫자만 인용해서 추천을 작성하라.\n\n"
+        f"[지점 프로파일]\n{json.dumps(dept_facts['branch_profile'], ensure_ascii=False)}\n\n"
+        f"[담당 지표 현황]\n{json.dumps(dept_facts['indicators'], ensure_ascii=False)}\n\n"
+        f"[상한 도달 지표]\n{json.dumps(dept_facts['maxed_indicators'], ensure_ascii=False)}\n\n"
+        f"[유사지점 대비 격차]\n{json.dumps(dept_facts['benchmark_gaps'], ensure_ascii=False)}\n\n"
+        f"[이 지점의 학습된 규칙]\n{json.dumps(dept_facts['learned_rules'], ensure_ascii=False)}\n\n"
+        f"[규정 근거 발췌]\n{json.dumps(dept_facts['regulation_excerpts'], ensure_ascii=False)}\n"
+    )
+    try:
+        response = client.responses.create(
+            model=MODEL,
+            instructions=build_dept_prompt(dept),
+            input=user_prompt,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "dept_agent_result",
+                    "schema": DEPT_AGENT_SCHEMA,
+                    "strict": True,
+                },
+            },
+        )
+        return json.loads(response.output_text)
+    except Exception:
+        return _fallback_dept_result(dept_facts)
+
+
+def run_all_dept_agents(all_dept_facts: dict[str, dict], client=None,
+                        progress_callback=None) -> dict[str, dict]:
+    """4개 부문 에이전트를 순차 실행한다.
+
+    Phase 3에서 LangGraph를 도입하면 이 함수가 fan-out 병렬 노드로 대체된다.
+    progress_callback(dept) 를 넘기면 각 부문 시작 시 호출되어 UI에 진행 상황을 띄울 수 있다.
+    """
+    client = client or get_client()
+    results = {}
+    for dept in DEPARTMENTS:
+        facts = all_dept_facts.get(dept)
+        if not facts:
+            continue
+        if progress_callback:
+            progress_callback(dept)
+        results[dept] = run_dept_agent(dept, facts, client=client)
+    return results
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 2단계: Supervisor 종합
+# ──────────────────────────────────────────────────────────────────────
+
+def _fallback_briefing(dept_results: dict[str, dict], learned_rules: list[dict]) -> dict:
+    """부문 에이전트 결과를 규칙 기반으로 묶어 최종 브리핑을 만든다.
+    부문을 돌아가며 하나씩 뽑아 한 부문 편중을 막는다(Supervisor R2와 같은 규칙)."""
     cards = []
-    for item in facts["top_roi"][:1]:
+    selected = []  # 카드로 채택된 (부문, 추천) 쌍 — 규정 요약도 이 목록만 다룬다.
+    for dept in DEPARTMENTS:
+        result = dept_results.get(dept)
+        if not result or not result.get("recommendations"):
+            continue
+        rec = result["recommendations"][0]
         cards.append({
             "label": "구간 연산",
-            "indicator_name": item["name"],
-            "message": (
-                f"'{item['name']}'은(는) 현재 {item['current_value']}{item['unit']} 실적으로 "
-                f"{item['gap']}{item['unit']}만 더 확보하면 +{item['score_gain']}점 구간을 통과합니다. "
-                f"잔여 {item['remaining_days']}영업일 내 달성 가능한 최우선 과제입니다."
-            ),
+            "indicator_name": rec["indicator_name"],
+            "message": f"[{dept}] {rec['reason']}",
         })
-    for item in facts["maxed"][:1]:
-        cards.append({
-            "label": "구간 연산",
-            "indicator_name": item["name"],
-            "message": f"'{item['name']}'은(는) 이미 만점 구간에 도달했습니다. 추가 영업을 멈추고 인력을 다른 지표로 전환하십시오.",
-        })
-    for item in facts["underperforming"][:1]:
-        cards.append({
-            "label": "벤치마킹",
-            "indicator_name": item["name"],
-            "message": (
-                f"유사 상권 1등 지점({item['peer_top_name']})은 '{item['name']}' 달성률 {item['peer_top_pct']}%이나, "
-                f"당점은 {item['my_pct']}%로 {item['gap_to_top']}%p 뒤처져 있습니다. 집중 공략이 필요합니다."
-            ),
-        })
-    for item in facts["micro"][:1]:
-        cards.append({
-            "label": "사각지대",
-            "indicator_name": item["name"],
-            "message": (
-                f"'{item['name']}'은(는) 달성률 {item['attainment_pct']}%로 놓치기 쉬운 조건부 지표입니다. "
-                f"창구 필수 안내 멘트로 추가해 주십시오."
-            ),
-        })
+        selected.append((dept, rec))
+        if len(cards) >= 3:
+            break
 
-    rule_note = ""
-    if facts["learned_rules"]:
-        r = facts["learned_rules"][0]
-        rule_note = f" (참고: {r['rule_text']})"
+    stop_notes = []
+    for dept, result in dept_results.items():
+        for name in (result.get("stop_recommendations") or [])[:1]:
+            stop_notes.append(f"[{dept}] '{name}'은(는) 이미 만점 구간이므로 영업력을 다른 지표로 전환하십시오.")
 
-    headline = f"이번 주 3대 과제 — 가성비 지표 확보, 벤치마킹 격차 해소, 사각지대 점검.{rule_note}"
-    regulation_summary = facts.get("regulation_note", "관련 규정 요약을 확인해 주세요.")
+    rule_note = f" (참고: {learned_rules[0]['rule_text']})" if learned_rules else ""
+    headline = f"이번 주 3대 과제 — 부문별 전문 에이전트가 선별한 우선 과제입니다.{rule_note}"
+
+    # 배포용 규정 요약은 '이번 주 과제로 채택된 지표'만 다뤄야 한다. 채택되지 않은
+    # 지표까지 넣으면 지점장이 전 직원에게 배포했을 때 과제가 아닌 지표를 안내하게 된다.
+    guide_lines = [f"· [{dept}] {rec['indicator_name']}: {rec['counter_guide']}" for dept, rec in selected]
+    regulation_summary = "\n".join(guide_lines + stop_notes) or "관련 규정 요약을 확인해 주세요."
+
     return {"headline": headline, "cards": cards, "regulation_summary": regulation_summary}
 
 
-def generate_weekly_briefing(facts: dict) -> dict:
-    """facts: dict(top_roi, maxed, underperforming, micro, learned_rules, regulation_note 등
-    scoring_engine/benchmarking/feedback_store가 계산한 결과만 담긴 순수 데이터)."""
-    client = get_client()
+def synthesize_briefing(dept_results: dict[str, dict], learned_rules: list[dict],
+                        branch_profile: dict, client=None) -> dict:
+    """Supervisor 단계: 부문별 결과를 종합해 최종 3대 과제를 확정한다."""
+    client = client or get_client()
     if client is None:
-        return _fallback_briefing(facts)
+        return _fallback_briefing(dept_results, learned_rules)
 
     user_prompt = (
-        "다음은 결정론적 연산엔진이 계산한 사실 데이터다. 이 숫자만 인용해서 브리핑을 작성하라.\n\n"
-        f"[가성비 지표 후보]\n{json.dumps(facts['top_roi'], ensure_ascii=False)}\n\n"
-        f"[상한도달 지표]\n{json.dumps(facts['maxed'], ensure_ascii=False)}\n\n"
-        f"[벤치마킹 뒤처진 지표]\n{json.dumps(facts['underperforming'], ensure_ascii=False)}\n\n"
-        f"[사각지대 후보 지표]\n{json.dumps(facts['micro'], ensure_ascii=False)}\n\n"
-        f"[학습된 지점 규칙]\n{json.dumps(facts['learned_rules'], ensure_ascii=False)}\n\n"
-        f"[규정 근거 발췌]\n{facts.get('regulation_note', '')}\n"
+        "다음은 4개 부문 전문 에이전트가 올린 추천 안건이다. "
+        "이 안건들 중에서만 골라 이번 주 3대 과제를 확정하라.\n\n"
+        f"[지점 프로파일]\n{json.dumps({'상권유형': branch_profile['type'], '규모': branch_profile['scale']}, ensure_ascii=False)}\n\n"
+        f"[부문별 안건]\n{json.dumps(dept_results, ensure_ascii=False)}\n\n"
+        f"[지점 학습 규칙]\n{json.dumps([r['rule_text'] for r in learned_rules], ensure_ascii=False)}\n"
     )
     try:
         response = client.responses.create(
@@ -159,8 +254,27 @@ def generate_weekly_briefing(facts: dict) -> dict:
         )
         return json.loads(response.output_text)
     except Exception:
-        return _fallback_briefing(facts)
+        return _fallback_briefing(dept_results, learned_rules)
 
+
+def generate_weekly_briefing(all_dept_facts: dict[str, dict], learned_rules: list[dict],
+                             branch_profile: dict, progress_callback=None) -> dict:
+    """부문 에이전트 실행 → Supervisor 종합까지 한 번에 수행한다.
+
+    반환값에는 최종 브리핑 외에 부문별 원본 결과(dept_results)도 함께 담아
+    UI에서 '어느 부문 에이전트가 무엇을 올렸는지' 보여줄 수 있게 한다.
+    """
+    client = get_client()
+    dept_results = run_all_dept_agents(all_dept_facts, client=client,
+                                       progress_callback=progress_callback)
+    briefing = synthesize_briefing(dept_results, learned_rules, branch_profile, client=client)
+    briefing["dept_results"] = dept_results
+    return briefing
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 규정 Q&A
+# ──────────────────────────────────────────────────────────────────────
 
 def answer_regulation_question(question: str, chunks: list[dict]) -> str:
     if not chunks:
