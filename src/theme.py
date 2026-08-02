@@ -5,7 +5,7 @@
 
 지원하는 슬롯 (파일명 → 표시 위치):
   assets/logo.png             → 사이드바 최상단 (모든 페이지 공통)
-  assets/hero.png             → 홈(app.py) 상단 배너
+  assets/hero.png             → 홈(Home.py) 상단 배너
   assets/briefing_banner.png  → ① 주간 전략 브리핑 페이지 상단 배너
   assets/background.png       → 앱 전체 배경 (반투명 오버레이로 가독성 유지)
 

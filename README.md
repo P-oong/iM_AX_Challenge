@@ -50,7 +50,7 @@ START → dispatch ─┬─▶ 수신 에이전트 ─┐
 
 | 파일 | 화면 |
 |---|---|
-| `app.py` | 홈 (핵심 기능 소개 · 에이전트 라인업 · 총점 요약) |
+| `Home.py` | 홈 (핵심 기능 소개 · 에이전트 라인업 · 총점 요약) |
 | `pages/1_주간_전략_브리핑.py` ⭐ | **핵심 화면** — 아래 참조 |
 | `pages/2_지표_현황_히트맵.py` | 상한도달/진행/가성비/사각지대 시각화 |
 | `pages/3_시뮬레이터.py` | "OO지표 N건 추가" → 총점 변화 즉시 계산 |
@@ -89,7 +89,7 @@ START → dispatch ─┬─▶ 수신 에이전트 ─┐
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run Home.py
 ```
 
 OpenAI API 키 없이도 전 화면이 폴백(결정론적 템플릿)으로 정상 동작합니다.
@@ -106,9 +106,12 @@ cp .env.example .env   # 그 다음 .env 파일에 실제 키 입력
 ## Streamlit Community Cloud 배포 (고정 URL)
 
 1. 이 저장소를 GitHub에 push 합니다.
-2. https://share.streamlit.io → "New app" → 저장소/브랜치/`app.py` 선택 후 배포.
+2. https://share.streamlit.io → "New app" → 저장소/브랜치/`Home.py` 선택 후 배포.
    → 배포 즉시 `https://<임의문자열>.streamlit.app` 형태의 **고정 URL**이 생성됩니다.
    (앱 설정에서 커스텀 subdomain을 직접 지정할 수도 있습니다.)
+   ⚠️ 이미 `app.py`로 배포해둔 상태라면, 앱 대시보드 → **Settings → General**에서
+   **Main file path**를 `Home.py`로 바꿔줘야 합니다(대소문자까지 정확히 일치해야 함 —
+   배포 서버는 Linux라 대소문자를 구분합니다).
 3. OpenAI API를 쓰려면 앱 대시보드 → **Settings → Secrets**에 아래를 붙여넣습니다.
    ```toml
    OPENAI_API_KEY = "sk-..."
