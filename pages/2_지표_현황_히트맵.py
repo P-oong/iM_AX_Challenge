@@ -51,6 +51,7 @@ for c in adjusted:
         "단위": c["unit"],
         "물리적 달성가능": "가능" if c["is_feasible"] else "불가",
         "peer 최고": b.get("peer_top_pct", None),
+        "전주대비": c.get("weekly_delta"),
     })
 df = pd.DataFrame(rows)
 
@@ -60,8 +61,8 @@ fig = px.bar(
     orientation="h",
     category_orders={"상태": list(CATEGORY_COLORS.keys())},
     hover_data={"부문": True, "현재점수": True, "만점": True, "잔여필요": True,
-                "단위": True, "물리적 달성가능": True, "달성률(%)": ":.1f"},
-    height=850,
+                "단위": True, "물리적 달성가능": True, "전주대비": True, "달성률(%)": ":.1f"},
+    height=1050,
 )
 fig.add_vline(x=100, line_dash="dash", line_color="#898781", row="all", col="all")
 fig.update_yaxes(matches=None, showticklabels=True, title=None)

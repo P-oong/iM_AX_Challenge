@@ -3,8 +3,8 @@
 
 실제로는 KPI 실적 DW(일 단위 배치)와 지점 프로파일 테이블에서 가져올 데이터를,
 데모에서는 seed 기반 랜덤 생성으로 대체한다. 생성되는 데이터는:
-  1) branch_profile : 당점(우리 지점)의 상권 유형 / 규모 등급
-  2) indicators      : KPI_MASTER 각 지표별 '현재 실적' 스냅샷 + peer 비교치
+  1) branch_profile : 당점(우리 지점)의 상권 유형 / 규모 등급 / 직원 수 / 지난 분기 KPI 등급
+  2) indicators      : KPI_MASTER 각 지표별 '현재 실적' 스냅샷 + 이번 달 일자별 히스토리 + peer 비교치
   3) feedback_log    : 지점장 피드백 이력(시드 데이터 몇 건 포함 - 데모 몰입감용)
 
 같은 seed를 주면 항상 같은 데이터가 나오도록 결정론적으로 만든다(재현성 검증용).
@@ -22,6 +22,11 @@ BRANCH_PROFILES = [
 
 PEER_BRANCH_NAMES = ["행복동지점", "미래로지점", "중앙로지점", "한빛지점"]
 
+KPI_GRADES = ["S", "A", "B+", "B", "C"]
+
+# 최근 1주(영업일 5일) 대비 변화를 계산하기 위한 기준 영업일 수
+WEEKLY_LOOKBACK_DAYS = 5
+
 
 def _business_days_left_in_month(today: date) -> int:
     """이번 달 잔여 영업일(주말 제외) 계산."""
@@ -38,6 +43,49 @@ def _business_days_left_in_month(today: date) -> int:
     return max(days, 1)
 
 
+def _business_days_elapsed_in_month(today: date) -> list[date]:
+    """이번 달 1일부터 오늘까지의 영업일 목록(주말 제외, 오늘 포함)."""
+    month_start = date(today.year, today.month, 1)
+    days = []
+    d = month_start
+    while d <= today:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    return days
+
+
+def _generate_history(rng: random.Random, current_value: float, business_days: list[date]) -> list[dict]:
+    """이번 달 영업일별 누적 실적 히스토리를 생성한다. 하루하루 증가폭은 들쭉날쭉하게
+    무작위 생성하되, 합계가 정확히 current_value(오늘 실적)가 되도록 스케일을 맞춘다."""
+    n = len(business_days)
+    if n == 0:
+        return []
+    if current_value <= 0:
+        return [{"date": d.isoformat(), "value": 0.0} for d in business_days]
+
+    raw_increments = [rng.uniform(0.3, 1.7) for _ in range(n)]
+    scale = current_value / sum(raw_increments)
+
+    history = []
+    cumulative = 0.0
+    for d, raw in zip(business_days, raw_increments):
+        cumulative += raw * scale
+        history.append({"date": d.isoformat(), "value": round(cumulative, 1)})
+    history[-1]["value"] = round(current_value, 1)  # 부동소수 오차 보정
+    return history
+
+
+def _weekly_comparison(history: list[dict], current_value: float) -> tuple[float | None, float | None]:
+    """영업일 기준 1주 전 실적과 현재 실적의 차이를 계산한다.
+    이번 달 영업일이 아직 1주 미만이면 비교 대상이 없으므로 None을 반환한다."""
+    n = len(history)
+    if n <= WEEKLY_LOOKBACK_DAYS:
+        return None, None
+    value_last_week = history[n - 1 - WEEKLY_LOOKBACK_DAYS]["value"]
+    return value_last_week, round(current_value - value_last_week, 1)
+
+
 def generate_branch_data(seed: int = 42, today: date | None = None) -> dict:
     rng = random.Random(seed)
     today = today or date.today()
@@ -45,7 +93,10 @@ def generate_branch_data(seed: int = 42, today: date | None = None) -> dict:
 
     branch_profile = dict(rng.choice(BRANCH_PROFILES))
     branch_profile["name"] = "당점(OO지점)"
+    branch_profile["staff_count"] = rng.randint(6, 18)
+    branch_profile["prior_quarter_grade"] = rng.choice(KPI_GRADES)
 
+    business_days = _business_days_elapsed_in_month(today)
     indicators = []
     for k in KPI_MASTER:
         last_threshold = k["hurdles"][-1]["threshold"]
@@ -69,12 +120,18 @@ def generate_branch_data(seed: int = 42, today: date | None = None) -> dict:
         peer_attain_pcts = [round(rng.uniform(30, 130), 1) for _ in PEER_BRANCH_NAMES]
         peer_records = list(zip(PEER_BRANCH_NAMES, peer_attain_pcts))
 
+        history = _generate_history(rng, current_value, business_days)
+        value_last_week, weekly_delta = _weekly_comparison(history, current_value)
+
         indicators.append({
             **k,
             "current_value": current_value,
             "daily_rate": daily_rate,
             "remaining_days": remaining_days,
             "peer_records": peer_records,  # [(지점명, 달성률%), ...]
+            "history": history,  # 이번 달 영업일별 누적 실적 [{"date":..., "value":...}, ...]
+            "value_last_week": value_last_week,  # 영업일 기준 1주 전 실적 (히스토리 부족 시 None)
+            "weekly_delta": weekly_delta,  # 1주 전 대비 증감분 (히스토리 부족 시 None)
         })
 
     feedback_log = _seed_feedback_log(rng)

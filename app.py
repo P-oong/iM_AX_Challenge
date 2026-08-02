@@ -16,6 +16,15 @@ data = get_data()
 computed = scoring_engine.compute_all(data["indicators"])
 total = scoring_engine.total_score(computed)
 
+# 전주 대비 총점 변화 — 지표별 '1주 전 실적'으로 재계산한 총점과 비교한다.
+# 이번 달 영업일이 아직 1주 미만이면 value_last_week가 없어 현재값을 그대로 사용(=변화 0).
+last_week_raw = [
+    {**ind, "current_value": ind["value_last_week"] if ind.get("value_last_week") is not None else ind["current_value"]}
+    for ind in data["indicators"]
+]
+last_week_total = scoring_engine.total_score(scoring_engine.compute_all(last_week_raw))
+weekly_score_delta = total["current"] - last_week_total["current"]
+
 st.title("🏦 지점 맞춤형 KPI 전담 에이전트")
 st.caption("iM AX 챌린지 2026 · 아이디어 제안 데모 (필수 데이터·로직 중심 MVP)")
 
@@ -27,13 +36,18 @@ st.markdown(
 """
 )
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("당점 현재 KPI 점수", f"{total['current']} / {total['max']}점", f"{total['pct']}%")
+    st.metric("당점 현재 KPI 점수", f"{total['current']} / {total['max']}점 ({total['pct']}%)",
+              f"{weekly_score_delta:+d}점 (전주 대비)")
 with col2:
     st.metric("상권 유형", data["branch_profile"]["type"])
 with col3:
     st.metric("잔여 영업일 (이번 달)", f"{data['remaining_days']}일")
+with col4:
+    profile = data["branch_profile"]
+    st.metric("지점 규모", f"{profile['scale']} · 직원 {profile['staff_count']}명",
+              help=f"지난 분기 KPI 등급: {profile['prior_quarter_grade']}")
 
 st.divider()
 
