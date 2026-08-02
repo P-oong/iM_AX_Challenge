@@ -1,7 +1,7 @@
 """
-LLM(OpenAI GPT) 연동 계층 — 보고서의 설계 원칙 "판단은 AI가, 계산은 엔진이"의 AI 쪽 절반.
+LLM(OpenAI GPT) 연동 계층 — 설계 원칙 "판단은 AI가, 계산은 엔진이"의 AI 쪽 절반.
 
-[Phase 2 구조] 브리핑 생성은 2단계로 나뉜다:
+브리핑 생성은 2단계로 나뉜다 (오케스트레이션은 graph.py의 LangGraph가 담당):
   1단계 (부문 에이전트) : 수신·여신·외환·기업연금 4개 부문 에이전트가 각자 자기
       부문 지표만 보고 추천 2건씩을 낸다. 프롬프트는 dept_prompts.py, 입력은
       dept_facts.py가 만든다. 하나의 프롬프트에 30개 지표를 몰아넣을 때 생기는
@@ -9,11 +9,10 @@ LLM(OpenAI GPT) 연동 계층 — 보고서의 설계 원칙 "판단은 AI가, �
   2단계 (Supervisor)    : 부문별 추천을 동일 척도로 비교해 최종 3대 과제를 확정하고
       지점장 브리핑 문구로 다듬는다.
 
-이 파일이 제공하는 함수:
-  - run_dept_agent           : 부문 에이전트 1개 실행
-  - run_all_dept_agents      : 4개 부문 순차 실행 (Phase 3에서 LangGraph 병렬 노드로 교체)
-  - generate_weekly_briefing : 위 2단계를 묶어 최종 브리핑을 생성 (페이지에서 호출)
-  - answer_regulation_question : rag.py가 찾아준 규정 청크만 근거로 답변
+이 파일이 제공하는 함수 (모두 graph.py의 노드 또는 페이지에서 호출):
+  - run_dept_agent             : 부문 에이전트 1개 실행 (graph의 fan-out 노드가 호출)
+  - synthesize_briefing        : Supervisor 종합 (graph의 supervisor 노드가 호출)
+  - answer_regulation_question : rag.py가 찾아준 규정 청크만 근거로 답변 (규정 Q&A 챗)
 
 OPENAI_API_KEY가 없으면 모든 함수가 결정론적 폴백 텍스트로 동작한다 — 데모를
 먼저 배포하고 나중에 키만 추가해도 되도록 하기 위함이다.
@@ -166,25 +165,6 @@ def run_dept_agent(dept: str, dept_facts: dict, client=None) -> dict:
         return _fallback_dept_result(dept_facts)
 
 
-def run_all_dept_agents(all_dept_facts: dict[str, dict], client=None,
-                        progress_callback=None) -> dict[str, dict]:
-    """4개 부문 에이전트를 순차 실행한다.
-
-    Phase 3에서 LangGraph를 도입하면 이 함수가 fan-out 병렬 노드로 대체된다.
-    progress_callback(dept) 를 넘기면 각 부문 시작 시 호출되어 UI에 진행 상황을 띄울 수 있다.
-    """
-    client = client or get_client()
-    results = {}
-    for dept in DEPARTMENTS:
-        facts = all_dept_facts.get(dept)
-        if not facts:
-            continue
-        if progress_callback:
-            progress_callback(dept)
-        results[dept] = run_dept_agent(dept, facts, client=client)
-    return results
-
-
 # ──────────────────────────────────────────────────────────────────────
 # 2단계: Supervisor 종합
 # ──────────────────────────────────────────────────────────────────────
@@ -255,21 +235,6 @@ def synthesize_briefing(dept_results: dict[str, dict], learned_rules: list[dict]
         return json.loads(response.output_text)
     except Exception:
         return _fallback_briefing(dept_results, learned_rules)
-
-
-def generate_weekly_briefing(all_dept_facts: dict[str, dict], learned_rules: list[dict],
-                             branch_profile: dict, progress_callback=None) -> dict:
-    """부문 에이전트 실행 → Supervisor 종합까지 한 번에 수행한다.
-
-    반환값에는 최종 브리핑 외에 부문별 원본 결과(dept_results)도 함께 담아
-    UI에서 '어느 부문 에이전트가 무엇을 올렸는지' 보여줄 수 있게 한다.
-    """
-    client = get_client()
-    dept_results = run_all_dept_agents(all_dept_facts, client=client,
-                                       progress_callback=progress_callback)
-    briefing = synthesize_briefing(dept_results, learned_rules, branch_profile, client=client)
-    briefing["dept_results"] = dept_results
-    return briefing
 
 
 # ──────────────────────────────────────────────────────────────────────

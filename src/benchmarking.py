@@ -35,8 +35,3 @@ def benchmark_indicator(computed_ind: dict) -> dict:
 def benchmark_all(computed_indicators: list[dict]) -> list[dict]:
     rows = [benchmark_indicator(c) for c in computed_indicators]
     return sorted(rows, key=lambda r: r["gap_to_top"], reverse=True)
-
-
-def top_underperforming(computed_indicators: list[dict], n: int = 1) -> list[dict]:
-    rows = [r for r in benchmark_all(computed_indicators) if r["underperforming"]]
-    return rows[:n]

@@ -15,10 +15,6 @@ RULE_THRESHOLD = 3
 DEPRIORITIZE_WEIGHT = 0.3
 
 
-def add_feedback(log: list[dict], entry: dict) -> list[dict]:
-    return log + [entry]
-
-
 def derive_rules(log: list[dict]) -> list[dict]:
     """(부문, 사유) 조합별 보류 횟수를 집계하고, 임계치 이상인 것만 '학습된 규칙'으로 반환."""
     tally: dict[tuple, int] = {}
