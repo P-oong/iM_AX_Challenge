@@ -37,6 +37,9 @@ def append_feedback(entry: dict) -> None:
 
 
 def sidebar_controls() -> None:
+    from src import theme
+    theme.sidebar_logo()
+
     with st.sidebar:
         st.markdown("### ⚙️ 데모 설정")
         seed = st.number_input("데이터 시드", min_value=0, max_value=9999,

@@ -8,10 +8,11 @@
 import pandas as pd
 import streamlit as st
 
-from src import data_generator, feedback_store
+from src import data_generator, feedback_store, theme
 from src.state import get_data, sidebar_controls
 
 st.set_page_config(page_title="피드백 로그", page_icon="📝", layout="wide")
+theme.apply_background()
 sidebar_controls()
 
 data = get_data()

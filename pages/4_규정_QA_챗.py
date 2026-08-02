@@ -6,10 +6,11 @@ LLM을 호출하지 않고 곧바로 "규정 확인 필요"를 반환한다 — 
 """
 import streamlit as st
 
-from src import llm_agent, rag
+from src import llm_agent, rag, theme
 from src.state import sidebar_controls
 
 st.set_page_config(page_title="규정 Q&A 챗", page_icon="💬", layout="wide")
+theme.apply_background()
 sidebar_controls()
 
 st.title("💬 KPI 규정 Q&A 챗")

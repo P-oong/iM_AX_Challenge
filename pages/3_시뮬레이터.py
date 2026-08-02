@@ -7,10 +7,11 @@ LLM 호출이 전혀 없다 — "계산 로직이 실제 규정과 일치하는�
 """
 import streamlit as st
 
-from src import kpi_master, scoring_engine
+from src import kpi_master, scoring_engine, theme
 from src.state import get_data, sidebar_controls
 
 st.set_page_config(page_title="시뮬레이터", page_icon="🧮", layout="wide")
+theme.apply_background()
 sidebar_controls()
 
 data = get_data()

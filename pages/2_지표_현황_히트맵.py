@@ -9,10 +9,11 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src import benchmarking, feedback_store, scoring_engine
+from src import benchmarking, feedback_store, scoring_engine, theme
 from src.state import get_data, sidebar_controls
 
 st.set_page_config(page_title="지표 현황 히트맵", page_icon="🗺️", layout="wide")
+theme.apply_background()
 sidebar_controls()
 
 CATEGORY_COLORS = {
