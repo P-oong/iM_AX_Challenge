@@ -42,14 +42,8 @@ def sidebar_controls() -> None:
         st.caption("※ 피드백 로그(지점 학습 규칙)는 데이터를 재생성해도 유지됩니다 — "
                    "인사이동과 무관하게 축적되는 지점 메모리 컨셉을 반영합니다.")
         st.divider()
-        import os
-        has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-        if not has_key:
-            try:
-                has_key = bool(st.secrets.get("ANTHROPIC_API_KEY"))
-            except Exception:
-                has_key = False
-        if has_key:
-            st.success("Claude API 연결됨 — AI 브리핑/Q&A 실사용 중")
+        from src.config import has_openai_api_key
+        if has_openai_api_key():
+            st.success("OpenAI API 연결됨 — AI 브리핑/Q&A 실사용 중")
         else:
-            st.warning("Claude API 키 미설정 — 폴백(결정론적 템플릿)으로 동작 중")
+            st.warning("OpenAI API 키 미설정 — 폴백(결정론적 템플릿)으로 동작 중")

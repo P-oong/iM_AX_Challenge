@@ -1,5 +1,5 @@
 """
-LLM(Claude) 연동 계층 — 보고서의 설계 원칙 "판단은 AI가, 계산은 엔진이"의 AI 쪽 절반.
+LLM(OpenAI GPT) 연동 계층 — 보고서의 설계 원칙 "판단은 AI가, 계산은 엔진이"의 AI 쪽 절반.
 
 이 파일이 하는 일은 딱 두 가지뿐이다:
   1) generate_weekly_briefing : scoring_engine/benchmarking/feedback_store가 이미
@@ -8,13 +8,19 @@ LLM(Claude) 연동 계층 — 보고서의 설계 원칙 "판단은 AI가, 계�
   2) answer_regulation_question : rag.py가 찾아준 규정 청크만 근거로 답변한다.
      근거 청크가 없으면 LLM을 호출하지 않고 "규정 확인 필요"를 반환한다(GUARD 규칙).
 
-ANTHROPIC_API_KEY가 설정되어 있지 않으면 두 함수 모두 결정론적 폴백 텍스트로
+OPENAI_API_KEY가 설정되어 있지 않으면 두 함수 모두 결정론적 폴백 텍스트로
 동작한다 — 데모를 먼저 배포하고 새벽에 키만 추가해도 되도록 하기 위함이다.
+키는 src/config.py 가 .env(로컬) 또는 환경변수(배포)에서 읽어온다.
+
+모델은 GPT-5.6 계열 중 '균형형(Terra)' 등급을 사용한다 — 이 앱의 LLM 호출은
+이미 계산된 사실을 근거로 짧은 한국어 문장을 만드는 제한적인 작업이라
+최상위 프론티어 등급은 과하고, 균형형 등급이 비용 대비 적당하다.
 """
 import json
-import os
 
-MODEL = "claude-opus-5"
+from src.config import get_openai_api_key
+
+MODEL = "gpt-5.6-terra"
 
 BRIEFING_SCHEMA = {
     "type": "object",
@@ -62,20 +68,14 @@ QA_SYSTEM_PROMPT = """\
 
 
 def get_client():
-    """Anthropic 클라이언트를 생성한다. 키가 없거나 SDK 초기화에 실패하면 None을 반환하여
+    """OpenAI 클라이언트를 생성한다. 키가 없거나 SDK 초기화에 실패하면 None을 반환하여
     호출부가 폴백 로직으로 넘어가도록 한다."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        try:
-            import streamlit as st
-            api_key = st.secrets.get("ANTHROPIC_API_KEY")
-        except Exception:
-            api_key = None
+    api_key = get_openai_api_key()
     if not api_key:
         return None
     try:
-        import anthropic
-        return anthropic.Anthropic(api_key=api_key)
+        from openai import OpenAI
+        return OpenAI(api_key=api_key)
     except Exception:
         return None
 
@@ -144,15 +144,20 @@ def generate_weekly_briefing(facts: dict) -> dict:
         f"[규정 근거 발췌]\n{facts.get('regulation_note', '')}\n"
     )
     try:
-        response = client.messages.create(
+        response = client.responses.create(
             model=MODEL,
-            max_tokens=1500,
-            system=SUPERVISOR_SYSTEM_PROMPT,
-            output_config={"format": {"type": "json_schema", "schema": BRIEFING_SCHEMA}},
-            messages=[{"role": "user", "content": user_prompt}],
+            instructions=SUPERVISOR_SYSTEM_PROMPT,
+            input=user_prompt,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "weekly_briefing",
+                    "schema": BRIEFING_SCHEMA,
+                    "strict": True,
+                },
+            },
         )
-        text = next(b.text for b in response.content if b.type == "text")
-        return json.loads(text)
+        return json.loads(response.output_text)
     except Exception:
         return _fallback_briefing(facts)
 
@@ -170,16 +175,12 @@ def answer_regulation_question(question: str, chunks: list[dict]) -> str:
         return f"{context}\n\n(출처: {titles})"
 
     try:
-        response = client.messages.create(
+        response = client.responses.create(
             model=MODEL,
-            max_tokens=800,
-            system=QA_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": f"[근거 문서 발췌]\n{context}\n\n[질문]\n{question}",
-            }],
+            instructions=QA_SYSTEM_PROMPT,
+            input=f"[근거 문서 발췌]\n{context}\n\n[질문]\n{question}",
         )
-        return next(b.text for b in response.content if b.type == "text")
+        return response.output_text
     except Exception:
         titles = ", ".join(c["title"] for c in chunks)
         return f"{context}\n\n(출처: {titles})"
