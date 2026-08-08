@@ -1,8 +1,8 @@
 # 🏦 지점 맞춤형 KPI 전담 에이전트
 
 > **iM AX 챌린지 2026** — 인사이동으로 떠나지 않는 '영속적인 디지털 부지점장'
->
-> 🔗 **데모**: https://imaxkpi.streamlit.app/
+> **데모 Notion 설명서**: https://app.notion.com/p/iM-AX-2026-3b011e0c9938809384fcffa8fc564c48?source=copy_link
+> 🔗 **데모**: https://imkpiax.streamlit.app/
 
 ## 프로젝트 개요
 
